@@ -103,17 +103,9 @@ class DatasetManager:
                     dataset=self.dataset_name,
                     path=self.get_temp_dir(),
                     force=True,
-                    quiet=True
+                    quiet=True,
+                    unzip=True
                 )
-                
-                # List all zip files in the directory
-                zip_files = list(Path(self.get_temp_dir()).glob("*.zip"))
-                
-                if zip_files:
-                    import zipfile
-                    with zipfile.ZipFile(zip_files[0], 'r') as zip_ref:
-                        zip_ref.extractall(self.get_temp_dir())
-                
                 self._extracted = True
                 
             except Exception as e:
