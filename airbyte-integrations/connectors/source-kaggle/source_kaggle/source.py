@@ -6,13 +6,22 @@ from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 import os
 import tempfile
 from pathlib import Path
+import requests
 
 import pandas as pd
+import numpy as np
+import json
+
+# Prevent Kaggle from auto-authenticating on import
+os.environ['KAGGLE_USERNAME'] = 'DUMMY'
+os.environ['KAGGLE_KEY'] = 'DUMMY'
+
+# Now we can safely import KaggleApi
 from kaggle.api.kaggle_api_extended import KaggleApi
 from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.http import HttpStream
-import numpy as np
+
 
 """
 TODO: Most comments in this class are instructive and should be deleted after the source is implemented.
@@ -29,79 +38,139 @@ There are additional required TODOs in the files within the integration_tests fo
 """
 
 
-# Basic full refresh stream
-class KaggleDatasetStream(HttpStream):
-    # TODO: Fill in the url base. Required.
-    url_base = "https://www.kaggle.com/api/v1/"
-    primary_key = None
-    name = "kaggle_dataset"
-    
-    def __init__(self, config: Mapping[str, Any]):
-        super().__init__(authenticator=None)
-        self.dataset_name = config["dataset_name"]
-        self.api = KaggleApi()
-        # Configure the Kaggle API with credentials
-        os.environ['KAGGLE_USERNAME'] = config["username"]
-        os.environ['KAGGLE_KEY'] = config["key"]
-        self.api.authenticate()
-        self._schema = None
-        self._temp_dir = None
-        self._extracted = False
+class DatasetManager:
+    """Singleton class to manage dataset download and extraction"""
+    _instance = None
+    _initialized = False
 
-    def _download_and_extract(self):
-        """Helper method to download and extract dataset"""
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatasetManager, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not DatasetManager._initialized:
+            self.api = None
+            self._temp_dir = None
+            self._extracted = False
+            self.dataset_name = None
+            self._csv_files = None
+            DatasetManager._initialized = True
+
+    def initialize(self, config: Mapping[str, Any]):
+        """Initialize with config if not already initialized"""
+        if not self.dataset_name:
+            self.dataset_name = config["dataset_name"]
+            self._ensure_api_initialized(config)
+
+    def _ensure_api_initialized(self, config):
+        """Initialize the Kaggle API if not already done"""
+        if self.api is None:
+            # Create kaggle.json file
+            kaggle_dir = os.environ.get('KAGGLE_CONFIG_DIR', os.path.expanduser('~/.kaggle'))
+            os.makedirs(kaggle_dir, exist_ok=True)
+            
+            kaggle_config = {
+                "username": config["username"],
+                "key": config["key"]
+            }
+            
+            kaggle_path = os.path.join(kaggle_dir, "kaggle.json")
+            with open(kaggle_path, "w") as f:
+                json.dump(kaggle_config, f)
+            
+            # Set file permissions to 600 as required by Kaggle
+            os.chmod(kaggle_path, 0o600)
+            
+            # Update environment variables with real credentials
+            os.environ['KAGGLE_USERNAME'] = config["username"]
+            os.environ['KAGGLE_KEY'] = config["key"]
+            
+            self.api = KaggleApi()
+            self.api.authenticate()
+
+    def get_temp_dir(self) -> str:
+        """Get or create temporary directory"""
         if not self._temp_dir:
             self._temp_dir = tempfile.mkdtemp()
-            
+        return self._temp_dir
+
+    def ensure_dataset_downloaded(self):
+        """Download and extract dataset if not already done"""
         if not self._extracted:
             try:
                 self.api.dataset_download_files(
                     dataset=self.dataset_name,
-                    path=self._temp_dir,
+                    path=self.get_temp_dir(),
                     force=True,
                     quiet=True
                 )
                 
                 # List all zip files in the directory
-                zip_files = list(Path(self._temp_dir).glob("*.zip"))
+                zip_files = list(Path(self.get_temp_dir()).glob("*.zip"))
                 
                 if zip_files:
                     import zipfile
                     with zipfile.ZipFile(zip_files[0], 'r') as zip_ref:
-                        zip_ref.extractall(self._temp_dir)
+                        zip_ref.extractall(self.get_temp_dir())
                 
                 self._extracted = True
                 
             except Exception as e:
-                self.logger.error(f"Error downloading/extracting dataset: {str(e)}")
-                raise e
+                raise Exception(f"Error downloading/extracting dataset: {str(e)}")
+
+    def get_csv_files(self) -> List[str]:
+        """Return list of CSV files in the dataset"""
+        if self._csv_files is None:
+            self.ensure_dataset_downloaded()
+            self._csv_files = [f.name for f in Path(self.get_temp_dir()).glob("*.csv")]
+        return self._csv_files
+
+    def cleanup(self):
+        """Cleanup temporary directory"""
+        if self._temp_dir and os.path.exists(self._temp_dir):
+            import shutil
+            shutil.rmtree(self._temp_dir)
+            self._temp_dir = None
+            self._extracted = False
+            self._csv_files = None
+
+class KaggleStream(HttpStream):
+    """Stream dynamique pour chaque fichier CSV"""
+    url_base = "https://www.kaggle.com/api/v1/"
+    primary_key = None
+
+    def __init__(self, config: Mapping[str, Any], csv_file: str):
+        super().__init__(authenticator=None)
+        self.csv_file = csv_file
+        self._schema = None
+        self.dataset_manager = DatasetManager()
+        self.dataset_manager.initialize(config)
+
+    @property
+    def name(self) -> str:
+        # Remove .csv extension and use as stream name
+        return self.csv_file.replace('.csv', '').lower()
 
     def get_json_schema(self) -> Mapping[str, Any]:
         """
-        Override get_json_schema to return the schema directly instead of loading from a file
-        Creates a unified schema that includes all columns from all CSV files
+        Returns the schema for the specific CSV file
         """
         if self._schema is not None:
             return self._schema
             
         schema = {
             "type": "object",
-            "properties": {
-                "_ab_source_file": {
-                    "type": "string"
-                }
-            }
+            "properties": {}
         }
         
-        self._download_and_extract()
+        self.dataset_manager.ensure_dataset_downloaded()
+        csv_path = Path(self.dataset_manager.get_temp_dir()) / self.csv_file
         
-        # Process all CSV files
-        for csv_file in Path(self._temp_dir).glob("*.csv"):
-            self.logger.info(f"Reading schema from: {csv_file.name}")
+        if csv_path.exists():
             try:
-                df = pd.read_csv(csv_file, nrows=1)
+                df = pd.read_csv(csv_path, nrows=1)
                 for column in df.columns:
-                    # Infer the type from the data
                     dtype = df[column].dtype
                     if pd.api.types.is_numeric_dtype(dtype):
                         if pd.api.types.is_integer_dtype(dtype):
@@ -115,11 +184,10 @@ class KaggleDatasetStream(HttpStream):
                         "type": ["null", field_type]
                     }
             except Exception as e:
-                self.logger.error(f"Error processing {csv_file.name}: {str(e)}")
+                self.logger.error(f"Error processing {self.csv_file}: {str(e)}")
         
         self._schema = schema
         return schema
-
 
     def next_page_token(self, response: Any) -> Optional[Mapping[str, Any]]:
         """
@@ -139,58 +207,46 @@ class KaggleDatasetStream(HttpStream):
         return None
 
     def path(self, **kwargs) -> str:
-        return f"datasets/download/{self.dataset_name}"
+        return f"datasets/download/{self.dataset_manager.dataset_name}"
 
-    def parse_response(self, response: Any, **kwargs) -> Iterable[Mapping]:
-        self._download_and_extract()
+    def read_records(self, *args, **kwargs) -> Iterable[Mapping[str, Any]]:
+        self.dataset_manager.ensure_dataset_downloaded()
+        csv_path = Path(self.dataset_manager.get_temp_dir()) / self.csv_file
         
-        # Process all CSV files in the directory
-        for file_path in Path(self._temp_dir).glob("*.csv"):
-            self.logger.info(f"Processing file: {file_path.name}")
-            
-            try:
-                # Read the CSV file
-                df = pd.read_csv(file_path)
-                
-                # Convert each row to a dictionary and yield it
-                for record in df.to_dict('records'):
-                    # Add metadata about which file this record came from
-                    record['_ab_source_file'] = file_path.name
-                    
-                    # Convert numpy/pandas types to Python native types
-                    for key, value in record.items():
-                        if pd.isna(value):
-                            record[key] = None
-                        elif isinstance(value, (np.integer, np.floating)):
-                            record[key] = value.item()
-                    
-                    yield record
-            except Exception as e:
-                self.logger.error(f"Error processing {file_path.name}: {str(e)}")
-                continue
+        if not csv_path.exists():
+            self.logger.warning(f"File {self.csv_file} not found in dataset")
+            return []
 
+        # Utiliser des chunks pour la lecture des fichiers
+        chunk_size = 10000  # Ajuster selon les besoins
+        for chunk in pd.read_csv(csv_path, chunksize=chunk_size):
+            for record in chunk.replace({np.nan: None}).to_dict('records'):
+                yield record
+
+    def parse_response(self, response: requests.Response, **kwargs) -> Iterable[Mapping]:
+        """
+        Cette méthode est requise par HttpStream mais nous utilisons read_records à la place
+        car nous travaillons avec des fichiers locaux après le téléchargement
+        """
+        yield from self.read_records(**kwargs)
+        
     def __del__(self):
         """Cleanup temporary directory when the object is destroyed"""
-        if self._temp_dir and os.path.exists(self._temp_dir):
-            import shutil
-            shutil.rmtree(self._temp_dir)
+        self.dataset_manager.cleanup()
 
-# Source
 class SourceKaggle(AbstractSource):
     def check_connection(self, logger, config) -> Tuple[bool, any]:
         try:
-            # Configure the Kaggle API with credentials
-            api = KaggleApi()
-            os.environ['KAGGLE_USERNAME'] = config["username"]
-            os.environ['KAGGLE_KEY'] = config["key"]
-            api.authenticate()
-            
-            # Test with a simple API call first
-            api.dataset_list(search=config["dataset_name"])
-            
+            manager = DatasetManager()
+            manager.initialize(config)
+            csv_files = manager.get_csv_files()
+            if not csv_files:
+                return False, "No CSV files found in the dataset"
             return True, None
         except Exception as e:
             return False, f"Error connecting to Kaggle: {str(e)}"
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
-        return [KaggleDatasetStream(config)]
+        manager = DatasetManager()
+        manager.initialize(config)
+        return [KaggleStream(config, csv_file) for csv_file in manager.get_csv_files()]

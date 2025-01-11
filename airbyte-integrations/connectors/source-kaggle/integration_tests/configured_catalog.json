@@ -2,17 +2,36 @@
   "streams": [
     {
       "stream": {
-        "name": "kaggle_dataset",
+        "name": "clubs",
         "json_schema": {
           "type": "object",
-          "properties": {
-            "_ab_source_file": {
-              "type": "string"
-            }
-          }
+          "properties": {}
         },
-        "supported_sync_modes": ["full_refresh"],
-        "source_defined_cursor": false
+        "supported_sync_modes": ["full_refresh"]
+      },
+      "sync_mode": "full_refresh",
+      "destination_sync_mode": "overwrite"
+    },
+    {
+      "stream": {
+        "name": "competitions",
+        "json_schema": {
+          "type": "object",
+          "properties": {}
+        },
+        "supported_sync_modes": ["full_refresh"]
+      },
+      "sync_mode": "full_refresh",
+      "destination_sync_mode": "overwrite"
+    },
+    {
+      "stream": {
+        "name": "games",
+        "json_schema": {
+          "type": "object",
+          "properties": {}
+        },
+        "supported_sync_modes": ["full_refresh"]
       },
       "sync_mode": "full_refresh",
       "destination_sync_mode": "overwrite"

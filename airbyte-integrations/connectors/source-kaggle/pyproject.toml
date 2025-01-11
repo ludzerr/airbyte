@@ -3,20 +3,20 @@ requires = [ "poetry-core>=1.0.0",]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-version = "0.1.0"
+version = "0.1.1"
 name = "source-kaggle"
 description = "Source implementation for kaggle."
-authors = [ "Airbyte <contact@airbyte.io>",]
+authors = [ "Ludovic Berset <ludo.berset@bluewin.ch>",]
 license = "MIT"
 readme = "README.md"
 documentation = "https://docs.airbyte.com/integrations/sources/kaggle"
 homepage = "https://airbyte.com"
-repository = "https://github.com/airbytehq/airbyte"
+repository = "https://github.com/ludzerr/airbyte/tree/f6eafb3f60166d661855ed2d09406927ac711b0c/airbyte-integrations/connectors/source-kaggle"
 packages = [ { include = "source_kaggle" }, {include = "main.py" } ]
 
 [tool.poetry.dependencies]
 python = "^3.9,<3.12"
-airbyte-cdk = "^0"
+airbyte-cdk = "^0.51.0"
 kaggle = "^1.5.16"
 pandas = "^2.1.4"
 numpy = "^1.24.3"

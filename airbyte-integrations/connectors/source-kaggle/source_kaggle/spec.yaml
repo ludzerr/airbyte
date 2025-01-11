@@ -6,6 +6,7 @@ connectionSpecification:
   required:
     - username
     - key
+    - dataset_name
   properties:
     username:
       type: string
@@ -22,5 +23,5 @@ connectionSpecification:
       type: string
       title: Dataset Name
       description: "The name of the Kaggle dataset (format: username/dataset-name)"
-      examples: ["username/dataset-name"]
+      examples: ["username/dataset-name", "imtkaggleteam/foreign-aid"]
       order: 2
